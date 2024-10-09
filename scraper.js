@@ -19,6 +19,14 @@ async function initializeDatabase() {
     )
   `);
 
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS link_contents (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      link TEXT UNIQUE,
+      content TEXT
+    )
+  `);
+
   return db;
 }
 
@@ -72,11 +80,39 @@ async function saveToDatabase(db, items) {
   await stmt.finalize();
 }
 
+async function fetchAndExtractContent(url) {
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  try {
+    await page.goto(url, { timeout: 30000 });
+    const content = await page.evaluate(() => {
+      return document.body.innerText;
+    });
+    return content.slice(0, 1000); // Limit content to 1000 characters
+  } catch (error) {
+    console.error(`Error fetching content from ${url}: ${error.message}`);
+    return "";
+  } finally {
+    await browser.close();
+  }
+}
+
 async function main() {
   const db = await initializeDatabase();
   const items = await scrapeHackerNews();
   await saveToDatabase(db, items);
   console.log(`Saved ${items.length} items to the database.`);
+
+  const contentStmt = await db.prepare(
+    "INSERT OR REPLACE INTO link_contents (link, content) VALUES (?, ?)",
+  );
+  for (const item of items) {
+    const content = await fetchAndExtractContent(item.link);
+    await contentStmt.run(item.link, content);
+    console.log(`Saved content for: ${item.title}`);
+  }
+  await contentStmt.finalize();
+
   await db.close();
 }
 
